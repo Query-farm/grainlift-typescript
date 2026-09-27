@@ -1,0 +1,39 @@
+{
+  "name": "@query-farm/grainlift",
+  "version": "0.1.0",
+  "description": "Typed Grainlift ADBC worker toolkit for Node.js",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "VALIDATION.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/*.test.js",
+    "check": "tsc --noEmit && biome check .",
+    "check:contract": "npm run build && node dist/check-contract.js",
+    "check:package": "npm run build && node scripts/check-package.mjs"
+  },
+  "dependencies": {
+    "@query-farm/vgi-rpc": "0.25.4",
+    "@query-farm/apache-arrow": "21.1.1"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.19.15",
+    "@biomejs/biome": "2.4.16"
+  }
+}
