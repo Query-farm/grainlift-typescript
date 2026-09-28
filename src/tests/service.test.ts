@@ -558,3 +558,95 @@ test("idle reaping closes abandoned statements and results", async () => {
   assert.equal(f.connection.closed, 1);
   await f.service.close();
 });
+
+test("independent principals keep interleaved results isolated after one closes", async () => {
+  const worker = new CompleteWorker();
+  const service = new GrainliftService(worker, {
+    authorize: () => true,
+    limits: { sessions: 2, sessionsPerPrincipal: 1 },
+  });
+  const bob = new AuthContext("test", true, "bob");
+  const call = (who: AuthContext, method: string, request: Record<string, unknown>) =>
+    service.withIdentity(who, () => service.invoke(method, request));
+  const open = (who: AuthContext) =>
+    call(who, "open_connection", { target: "default", database_options: [], connection_options: [] });
+  try {
+    const aliceSession = await open(identity);
+    const bobSession = await open(bob);
+    const aliceStatement = await call(identity, "new_statement", aliceSession);
+    const bobStatement = await call(bob, "new_statement", bobSession);
+    const aliceResult = await call(identity, "execute", aliceStatement);
+    const bobResult = await call(bob, "execute", bobStatement);
+    const aliceRequest = { ...aliceSession, ...aliceResult, sequence: 0n };
+    const bobRequest = { ...bobSession, ...bobResult, sequence: 0n };
+    await assert.rejects(
+      service.withIdentity(bob, () => service.initResult(aliceRequest)),
+      isStatus("not_found"),
+    );
+    const aliceCursor = await service.withIdentity(identity, () => service.initResult(aliceRequest));
+    const bobCursor = await service.withIdentity(bob, () => service.initResult(bobRequest));
+    const [aliceFirst, bobFirst] = await Promise.all([
+      service.withIdentity(identity, () => service.next(aliceCursor)),
+      service.withIdentity(bob, () => service.next(bobCursor)),
+    ]);
+    assert.equal(aliceFirst?.numRows, 1);
+    assert.equal(bobFirst?.numRows, 1);
+    await call(identity, "close_connection", aliceSession);
+    assert.deepEqual(service.snapshot(), { sessions: 1, statements: 1, results: 1, uploads: 0 });
+    assert.equal(worker.connections[0]!.statement.resultClosed, 1);
+    assert.equal(worker.connections[1]!.statement.resultClosed, 0);
+    bobCursor.sequence = 1n;
+    assert.equal((await service.withIdentity(bob, () => service.next(bobCursor)))?.numRows, 1);
+    bobCursor.sequence = 2n;
+    assert.equal(await service.withIdentity(bob, () => service.next(bobCursor)), null);
+    assert.equal(worker.connections[1]!.statement.resultClosed, 1);
+    await call(bob, "close_connection", bobSession);
+    assert.deepEqual(service.snapshot(), { sessions: 0, statements: 0, results: 0, uploads: 0 });
+  } finally {
+    await service.close();
+  }
+});
+
+test("bounded session churn releases partial results without disturbing a live reader", async () => {
+  const worker = new CompleteWorker();
+  const service = new GrainliftService(worker, {
+    authorize: () => true,
+    limits: { sessions: 2, sessionsPerPrincipal: 1 },
+  });
+  const bob = new AuthContext("test", true, "bob");
+  const call = (who: AuthContext, method: string, request: Record<string, unknown>) =>
+    service.withIdentity(who, () => service.invoke(method, request));
+  const open = (who: AuthContext) =>
+    call(who, "open_connection", { target: "default", database_options: [], connection_options: [] });
+  try {
+    const observer = await open(identity);
+    const observerStatement = await call(identity, "new_statement", observer);
+    const observerResult = await call(identity, "execute", observerStatement);
+    const observerCursor = await service.withIdentity(identity, () =>
+      service.initResult({ ...observer, ...observerResult, sequence: 0n }),
+    );
+    assert.equal((await service.withIdentity(identity, () => service.next(observerCursor)))?.numRows, 1);
+    for (let index = 0; index < 64; index++) {
+      const session = await open(bob);
+      await assert.rejects(open(bob), isStatus("invalid_state"));
+      const statement = await call(bob, "new_statement", session);
+      const result = await call(bob, "execute", statement);
+      const cursor = await service.withIdentity(bob, () =>
+        service.initResult({ ...session, ...result, sequence: 0n }),
+      );
+      assert.equal((await service.withIdentity(bob, () => service.next(cursor)))?.numRows, 1);
+      await call(bob, "close_connection", session);
+      assert.deepEqual(service.snapshot(), { sessions: 1, statements: 1, results: 1, uploads: 0 });
+      assert.equal(worker.connections[index + 1]!.closed, 1);
+      assert.equal(worker.connections[index + 1]!.statement.resultClosed, 1);
+    }
+    observerCursor.sequence = 1n;
+    assert.equal((await service.withIdentity(identity, () => service.next(observerCursor)))?.numRows, 1);
+    await call(identity, "close_connection", observer);
+  } finally {
+    await service.close();
+  }
+  assert.equal(worker.connections.length, 65);
+  assert.ok(worker.connections.every((connection) => connection.closed === 1));
+  assert.deepEqual(service.snapshot(), { sessions: 0, statements: 0, results: 0, uploads: 0 });
+});

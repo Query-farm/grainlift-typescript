@@ -31,6 +31,11 @@ with a downstream error message. The separate example has two workload tests.
 Strict TypeScript, Biome, canonical contract parity, and an isolated installed
 npm tarball consumer are separate gates.
 
+The current SDK suite has 40 tests, including independent-principal interleaving
+and 64-cycle bounded session churn. All 40 passed locally on 2026-09-28 with
+strict TypeScript and Biome. The EC2 transport counts above are the earlier
+recorded run; they do not include this newly added SDK coverage.
+
 This evidence establishes interoperability and tested lifecycle/security
 behavior. It is not long-running load/soak evidence, real-backend certification,
 Windows Iroh support, or evidence that hosted CI has run. Consult
