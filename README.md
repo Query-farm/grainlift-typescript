@@ -189,7 +189,9 @@ checks strict compilation and runtime imports.
 
 Tests cover positive optional backend hooks, Arrow IPC framing/compression
 rejection, exact integers, ownership, quotas, replay, binding cleanup, result
-cleanup and shutdown. The shared native ADBC/wire suite in Grainlift is the
+cleanup and shutdown. They also keep two principals' result streams live at
+once and cycle 64 short-lived sessions through a two-session quota while
+checking cleanup. The shared native ADBC/wire suite in Grainlift is the
 cross-language interoperability gate. See [the behavior matrix](docs/COVERAGE.md)
 for the relationship between these tests and the older Python/Rust suites.
 Production load/soak validation remains separate work.

@@ -9,12 +9,13 @@ equivalent coverage, nor should cases be duplicated just to match a number.
 | Behavior | TypeScript evidence | Shared native-driver evidence |
 | --- | --- | --- |
 | All 31 methods and exact Arrow records | Canonical contract parity; strict typed-record tests | Method registration, version and malformed-schema rejection |
-| Statement lifecycle and result pulls | Replay, cursor cleanup, byte limits, exact bigint | Repeated queries, partial close, independent handles, recoverable errors |
+| Statement lifecycle and result pulls | Replay, cursor cleanup, byte limits, exact bigint, interleaved live results across principals | Repeated queries, partial close, independent handles, recoverable errors |
 | Preparation, updates and transactions | Positive hook dispatch, row-count validation | Synthetic example intentionally returns `NOT_IMPLEMENTED` |
 | Binding and ingestion input | Positive single/stream binding, finish/replay, byte/batch limits | Optional hooks are not a substitute for a real ingestion backend gate |
 | Options, metadata and Substrait | Four exact option types, null/empty filters, metadata cursors, exact binary plan | Native query fixture does not certify every metadata schema |
 | Partitioned results | Signed token round trip, tampering and cross-principal rejection | Backend-specific partition behavior needs backend integration tests |
-| Principal ownership | Different principals and authentication domains | HTTP credentials, verified mTLS identities, Iroh EndpointId allowlist |
+| Principal ownership | Different principals and authentication domains, cross-owner result denial while both clients remain active | HTTP credentials, verified mTLS identities, Iroh EndpointId allowlist |
+| Bounded session churn | 64 open/query/partial-close cycles at a two-session quota while another result remains live; backend close counts and retained handles checked each cycle | Native independent-client and session-churn tests in the shared worker suite |
 | HTTP/HTTPS | Admission, bounded body intake, cancellation and shutdown | Actual ADBC query/error/reuse plus certificate validation |
 | TCP/mTLS | Stock VGI client, admission, idle timeout, lifetime byte boundary, TLS handshake timeout, disconnect cleanup | Actual ADBC persistent streams, certificate/hostname/ownership rejection |
 | Iroh | Strict identity configuration and owned bridge lifecycle | Actual native ADBC QUIC streams, two allowed identities and denied identity |
