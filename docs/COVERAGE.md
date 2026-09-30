@@ -10,7 +10,7 @@ equivalent coverage, nor should cases be duplicated just to match a number.
 | --- | --- | --- |
 | All 31 methods and exact Arrow records | Canonical contract parity; strict typed-record tests | Method registration, version and malformed-schema rejection |
 | Statement lifecycle and result pulls | Replay, cursor cleanup, byte limits, exact bigint, interleaved live results across principals | Repeated queries, partial close, independent handles, recoverable errors |
-| Preparation, updates and transactions | Positive hook dispatch, row-count validation | Synthetic example intentionally returns `NOT_IMPLEMENTED` |
+| Preparation, updates and transactions | Positive hook dispatch, row-count validation | The hello-world example prepares queries through DuckDB/Haybarn `adbc_scanner`; updates and transactions are not exercised natively |
 | Binding and ingestion input | Positive single/stream binding, finish/replay, byte/batch limits | Optional hooks are not a substitute for a real ingestion backend gate |
 | Options, metadata and Substrait | Four exact option types, null/empty filters, metadata cursors, exact binary plan | Native query fixture does not certify every metadata schema |
 | Partitioned results | Signed token round trip, tampering and cross-principal rejection | Backend-specific partition behavior needs backend integration tests |
@@ -20,6 +20,15 @@ equivalent coverage, nor should cases be duplicated just to match a number.
 | TCP/mTLS | Stock VGI client, admission, idle timeout, lifetime byte boundary, TLS handshake timeout, disconnect cleanup | Actual ADBC persistent streams, certificate/hostname/ownership rejection |
 | Iroh | Strict identity configuration and owned bridge lifecycle | Actual native ADBC QUIC streams, two allowed identities and denied identity |
 | Packaging | Installed npm tarball strict compilation and runtime import | Independent executable process adapter |
+
+The shared native-driver column records runs of Grainlift's
+`validation/conformance` suite against the former synthetic TypeScript worker.
+That worker has been replaced by the
+[hello-world example](https://github.com/Query-farm/grainlift-hello-world-typescript),
+and no TypeScript CI job runs the shared suite any longer; treat that column as
+historical until this SDK adds its own native-driver fixture. The example's CI
+exercises HTTP, anonymous and token access, and SQL through `adbc_scanner` with
+the native driver.
 
 The shared suite selects applicable behaviors per transport. Deselected HTTP
 token tests on mTLS/Iroh are replaced by certificate/EndpointId checks; they are

@@ -9,7 +9,9 @@ Node.js 22 or newer is required.
 ## Status
 
 This is a prerelease SDK. The package name is `@query-farm/grainlift`, but it is
-**not published to npm**. Build from source with the sibling checkout below.
+**not published to npm**. Depend on a pinned commit through npm's GitHub
+support (`"@query-farm/grainlift": "github:Query-farm/grainlift-typescript#<commit>"`);
+the `prepare` script builds `dist/` during installation.
 
 The toolkit implements all 31 methods in Grainlift 0.4.0, including
 connections, statements, transactions, preparation, single-batch and stream
@@ -26,27 +28,19 @@ for hosted CI runs.
 
 ## Quickstart
 
-Use sibling checkouts so the example can resolve its source dependency:
+The [hello-world example](https://github.com/Query-farm/grainlift-hello-world-typescript)
+is the place to start: a complete read-only service with three queries, served
+anonymously on loopback and queried from Haybarn/DuckDB or the Node.js ADBC
+driver manager.
 
 ```sh
-git clone https://github.com/Query-farm/grainlift-typescript.git
+git clone https://github.com/Query-farm/grainlift.git
+(cd grainlift && cargo build --locked -p adbc-driver-grainlift)
 git clone https://github.com/Query-farm/grainlift-hello-world-typescript.git
-cd grainlift-typescript
+cd grainlift-hello-world-typescript
 npm ci
-npm run build
-cd ../grainlift-hello-world-typescript
-npm ci
-npm run build
-export GRAINLIFT_HELLO_TOKEN="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')"
-node dist/main.js --transport http --port 0
+npm start
 ```
-
-The example prints its endpoint as JSON. Keep stdin open while using the server;
-a newline, EOF, SIGINT, or SIGTERM initiates shutdown. Connect with the native
-Grainlift ADBC driver, target `default`, the configured bearer token, and
-`autocommit=True`, then execute `QUERY`. See the
-[example README](https://github.com/Query-farm/grainlift-hello-world-typescript#readme)
-for workload controls and other transports.
 
 ## Build a backend
 
@@ -75,6 +69,70 @@ const authenticate = bearerAuthenticateStatic(new Map([
 ]));
 const server = await serveHttp(service, authenticate);
 // server.endpoint is a loopback URL; await server.close() during shutdown.
+```
+
+### Results: iterators and producers
+
+`Statement.execute` returns a `QueryResult`: a schema plus any iterable or async
+iterable of batches, with an optional `close` callback for resources such as a
+database cursor. The iterator lives in server memory until the result is
+exhausted or released.
+
+When the remaining work fits in a small serializable state, return a
+`ResultProducer` instead. Its own fields (JSON values and `bigint`) are the
+entire resumable state and `produce()` returns the next batch or `null`:
+
+```typescript
+import { batch, QueryResult, ResultProducer, type RecordBatch } from "@query-farm/grainlift";
+
+class Countdown extends ResultProducer {
+  constructor(public remaining: number) { super(); }
+  produce(): RecordBatch | null {
+    if (this.remaining === 0) return null;
+    return batch(schema, { n: [BigInt(this.remaining--)] });
+  }
+}
+ResultProducer.register("my-service:Countdown", Countdown); // once, under a stable name
+// In Statement.execute():
+return QueryResult.fromProducer(schema, new Countdown(10));
+```
+
+The service encodes the initial state at execute time. Over HTTP the encoded
+state rides in the `read_result` cursor, which VGI seals into the encrypted
+continuation token after every batch; the server keeps no iterator and no replay
+batch. A retried fetch of the previous sequence re-produces its batch from the
+token; older sequences fail with `INVALID_ARGUMENT`. Only registered classes
+decode (others are `INVALID_DATA`), and decoding restores fields without calling
+the constructor. Raw-stream transports carry the same state in their in-memory
+cursor. `Limits.producerStateBytes` (64 KiB) bounds the encoded state.
+
+### Anonymous access and development hosting
+
+Token authentication is the default. Services that are safe to expose without
+credentials, such as read-only public data, can opt in to anonymous HTTP access:
+
+```typescript
+import { authenticateAnonymous } from "@query-farm/grainlift";
+// Requests without an Authorization header act as "anonymous"; tokens still work.
+const server = await serveHttp(service, authenticateAnonymous("anonymous", tokens));
+```
+
+`tokens` is optional and takes the same map as `bearerAuthenticateStatic` (or
+any authenticator). A presented credential that fails is rejected, never
+downgraded to anonymous. Anonymous identities use the separate
+`grainlift.anonymous` authentication domain, so their sessions and continuation
+tokens cannot be used by a token principal, and token identities may not claim
+the anonymous principal name.
+
+For development, `run()` from `@query-farm/grainlift/cli` gives a worker its own
+command with `--host http|mtls`, `--port` (default 8080), `--auth
+token|anonymous` and mTLS certificate flags. HTTP uses the token in
+`GRAINLIFT_TOKEN`, generating and printing one when it is unset. The toolkit
+installs no executable of its own:
+
+```typescript
+import { run } from "@query-farm/grainlift/cli";
+await run(new MyWorker(), { target: "default", auth: "token" });
 ```
 
 ## Contract and backend responsibilities
@@ -136,9 +194,9 @@ overwrite those keys; additional options require explicit allowlists.
 
 Defaults: 128 sessions, 16 per principal, 64 statements and 64 results per session,
 8 MiB request, 16 MiB batch, 1 MiB schema/SQL, 64 MiB staged binding, 1024 binding
-batches, 1024 partitions with 1 MiB combined tokens, and 5 minutes idle expiry.
-All are configurable positive finite limits. Results retain at most one replay
-batch per cursor. Binding is explicitly bounded staging, not unbounded streaming;
+batches, 1024 partitions with 1 MiB combined tokens, 64 KiB producer state, and
+5 minutes idle expiry. All are configurable positive finite limits. Iterator
+results retain at most one replay batch per cursor; producer results retain none. Binding is explicitly bounded staging, not unbounded streaming;
 the backend receives input only after a validated finish frame. Retained Arrow
 backing buffers count toward batch/binding limits. Partition tokens expire and
 are authenticated to the principal, target and service instance.
@@ -189,7 +247,8 @@ checks strict compilation and runtime imports.
 
 Tests cover positive optional backend hooks, Arrow IPC framing/compression
 rejection, exact integers, ownership, quotas, replay, binding cleanup, result
-cleanup and shutdown. They also keep two principals' result streams live at
+cleanup and shutdown, plus producer results resumed through HTTP continuation
+tokens, anonymous access and the development command-line host. They also keep two principals' result streams live at
 once and cycle 64 short-lived sessions through a two-session quota while
 checking cleanup. The shared native ADBC/wire suite in Grainlift is the
 cross-language interoperability gate. See [the behavior matrix](docs/COVERAGE.md)
@@ -203,9 +262,9 @@ Our public declarations do not expose that alias or VGI types; consumers need no
 tsconfig workaround. The separate example is compiled as a strict consumer.
 
 The [CI workflow](.github/workflows/ci.yml) tests Node 22/24 on Linux/macOS,
-including packaging and contract parity. The separate example runs the shared
-native-driver suite across all five transports. Recorded EC2 results and hosted
-CI runs are distinct evidence; see the links above for each.
+including packaging and contract parity. The separate example tests its queries
+through the native driver and Haybarn. Recorded EC2 results and hosted CI runs
+are distinct evidence; see the links above for each.
 
 ## Documentation
 

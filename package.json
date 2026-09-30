@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./cli": {
+      "types": "./dist/cli.d.ts",
+      "import": "./dist/cli.js"
     }
   },
   "files": [
@@ -22,6 +26,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "check": "tsc --noEmit && biome check .",
     "check:contract": "npm run build && node dist/check-contract.js",

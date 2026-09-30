@@ -2,7 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 export * from "./api.js";
 export * from "./arrow.js";
-export { AuthContext, type AuthenticateFn, bearerAuthenticateStatic } from "./auth.js";
+export {
+  ANONYMOUS_DOMAIN,
+  AuthContext,
+  type AuthenticateFn,
+  authenticateAnonymous,
+  bearerAuthenticateStatic,
+} from "./auth.js";
 export { type HttpServerOptions, serveHttp } from "./hosting.js";
 export { GrainliftService, type ServiceOptions } from "./service.js";
 export {

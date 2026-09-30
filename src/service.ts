@@ -21,6 +21,7 @@ import {
   type ObjectFilters,
   type OptionValue,
   type QueryResult,
+  ResultProducer,
   type Statement,
   type StatisticsFilters,
   type TableIdentifier,
@@ -54,6 +55,8 @@ import {
 interface ResultState {
   query: QueryResult;
   iterator: AsyncIterator<RecordBatch> | Iterator<RecordBatch>;
+  /** Initial encoded producer (base64); later states travel only in cursors. */
+  producer?: string;
   sequence: bigint;
   previous?: RecordBatch;
   ended: boolean;
@@ -92,6 +95,8 @@ interface Cursor {
   session_id: string;
   result_id: string;
   sequence: bigint;
+  /** Encoded ResultProducer state (base64) for producer results, sealed into continuation tokens. */
+  producer?: string;
   __outputSchema?: Schema;
 }
 interface BindCursor {
@@ -435,6 +440,7 @@ export class GrainliftService {
     }
     const result: ResultState = { query, iterator, sequence: 0n, ended: false, released: false };
     try {
+      if (query.producer !== undefined) result.producer = this.encodeProducer(query.producer);
       const schema_ipc = this.checkSchema(query.schema);
       const rows_affected = this.rows(query.rowsAffected ?? null);
       const result_id = randomUUID();
@@ -446,6 +452,13 @@ export class GrainliftService {
       await this.release(result);
       throw error;
     }
+  }
+  private encodeProducer(producer: ResultProducer): string {
+    if (!(producer instanceof ResultProducer)) throw new AdbcError("Invalid result producer", "invalid_data");
+    const encoded = producer.encode();
+    if (encoded.length > this.limits.producerStateBytes)
+      throw new AdbcError("Result producer state exceeds configured limit", "invalid_data");
+    return Buffer.from(encoded).toString("base64");
   }
   private rows(value: bigint | null): bigint | null {
     if (value !== null && (typeof value !== "bigint" || value < -1n || value >= 1n << 63n)) {
@@ -716,6 +729,8 @@ export class GrainliftService {
         typeof request.sequence === "number" && Number.isSafeInteger(request.sequence)
           ? BigInt(request.sequence)
           : request.sequence;
+      if (result.producer !== undefined && sequence !== 0n)
+        invalid("Producer results resume from continuation tokens");
       if (
         typeof sequence !== "bigint" ||
         sequence < 0n ||
@@ -726,17 +741,23 @@ export class GrainliftService {
         session_id: text(request.session_id),
         result_id: text(request.result_id),
         sequence,
+        ...(result.producer === undefined ? {} : { producer: result.producer }),
         __outputSchema: result.query.schema,
       };
     });
   }
-  /** Fetch exactly one batch; retain only the immediately preceding replay batch. */
+  /**
+   * Fetch exactly one batch. Iterator results retain only the immediately
+   * preceding replay batch; producer results retain nothing and advance
+   * `cursor.producer` to the state for the following fetch.
+   */
   async next(cursor: Cursor): Promise<RecordBatch | null> {
     return this.guard(async () => {
       const session = this.session(cursor.session_id);
       return this.locked(session, async () => {
         const result = session.results.get(cursor.result_id);
         if (!result) throw new AdbcError("Result is unavailable", "not_found");
+        if (result.producer !== undefined) return this.nextProduced(session, result, cursor);
         if (cursor.sequence === result.sequence - 1n && result.previous) return result.previous;
         if (cursor.sequence !== result.sequence) invalid("Invalid result sequence");
         if (result.ended) return null;
@@ -748,13 +769,7 @@ export class GrainliftService {
             return null;
           }
           const value = next.value;
-          if (!sameSchema(value.schema, result.query.schema))
-            throw new AdbcError("Result schema changed", "invalid_data");
-          if (
-            retainedBytes(value) > this.limits.batchBytes ||
-            encodeBatch(value).length > this.limits.batchBytes
-          )
-            throw new AdbcError("Batch exceeds configured limit", "invalid_data");
+          this.checkBatch(result, value);
           result.previous = value;
           result.sequence++;
           return value;
@@ -764,6 +779,42 @@ export class GrainliftService {
         }
       });
     });
+  }
+  private checkBatch(result: ResultState, value: RecordBatch): void {
+    if (!sameSchema(value.schema, result.query.schema))
+      throw new AdbcError("Result schema changed", "invalid_data");
+    if (retainedBytes(value) > this.limits.batchBytes || encodeBatch(value).length > this.limits.batchBytes)
+      throw new AdbcError("Batch exceeds configured limit", "invalid_data");
+  }
+  /** Resume a producer from cursor state; replaying the previous sequence re-produces its batch. */
+  private async nextProduced(
+    session: Session,
+    result: ResultState,
+    cursor: Cursor,
+  ): Promise<RecordBatch | null> {
+    if (cursor.sequence !== result.sequence && cursor.sequence !== result.sequence - 1n)
+      invalid("Invalid result sequence");
+    if (result.ended && cursor.sequence === result.sequence) return null;
+    let value: RecordBatch | null;
+    let advanced: string;
+    try {
+      if (typeof cursor.producer !== "string") throw new AdbcError("Unknown result producer", "invalid_data");
+      const producer = ResultProducer.decode(Buffer.from(cursor.producer, "base64"));
+      value = await producer.produce();
+      if (value === null) {
+        result.ended = true;
+        await this.release(result);
+        return null;
+      }
+      this.checkBatch(result, value);
+      advanced = this.encodeProducer(producer);
+    } catch (error) {
+      await this.dropResult(session, cursor.result_id);
+      throw error;
+    }
+    if (cursor.sequence + 1n > result.sequence) result.sequence = cursor.sequence + 1n;
+    cursor.producer = advanced;
+    return value;
   }
   async initBind(request: Record<string, unknown>, stream: boolean): Promise<BindCursor> {
     return this.guard(async () => {
