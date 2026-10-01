@@ -3,13 +3,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AdbcError, Connection, QueryResult, ResultProducer, Statement } from "../api.js";
-import { batch, Field, Int64, type RecordBatch, Schema } from "../arrow.js";
+import { batch, field, int64, schema as makeSchema, type RecordBatch } from "../arrow.js";
 import { AuthContext, bearerAuthenticateStatic } from "../auth.js";
 import { GrainliftService } from "../service.js";
 import { connect } from "./http-client.js";
 
 const identity = new AuthContext("test", true, "alice");
-const schema = new Schema([new Field("n", new Int64(), false), new Field("total", new Int64(), false)]);
+const schema = makeSchema([field("n", int64(), false), field("total", int64(), false)]);
 const isStatus =
   (status: string, message?: string) =>
   (error: unknown): boolean =>
@@ -88,7 +88,7 @@ async function execute(value: GrainliftService, sql: string) {
   const { result_id } = await value.invoke("execute", { session_id, statement_id });
   return { session_id, result_id };
 }
-const totals = (value: RecordBatch | null) => Array.from(value?.getChild("total")?.toArray() ?? [], Number);
+const totals = (value: RecordBatch | null) => Array.from(value?.getChild("total") ?? [], Number);
 
 test("HTTP resumes producers from continuation tokens without retaining batches", async () => {
   const { service: value, connection } = service();

@@ -4,7 +4,8 @@ Build server-side ADBC workers in TypeScript. Ordinary ADBC applications keep
 using `adbc-driver-grainlift`; this package supplies the backend framework.
 It carries typed Arrow records over [VGI-RPC](https://github.com/Query-farm/vgi-rpc-typescript)
 and connects to the ordinary [Grainlift ADBC driver](https://github.com/Query-farm/grainlift).
-Node.js 22 or newer is required.
+It runs on Node.js 22 or newer, and on Cloudflare Workers (see
+[Cloudflare Workers](#cloudflare-workers)).
 
 ## Status
 
@@ -70,6 +71,24 @@ const authenticate = bearerAuthenticateStatic(new Map([
 const server = await serveHttp(service, authenticate);
 // server.endpoint is a loopback URL; await server.close() during shutdown.
 ```
+
+### Arrow types and batches
+
+Schemas and batches come from VGI-RPC's Arrow facade, re-exported here: arrow-js
+under Node.js, [flechette](https://github.com/uwdata/flechette) under Cloudflare
+Workers. Build them with the factory functions rather than a backend's classes,
+so the same backend code runs on both:
+
+```typescript
+import { batch, field, int64, schema, utf8 } from "@query-farm/grainlift";
+
+const people = schema([field("id", int64(), false), field("name", utf8(), true)]);
+const rows = batch(people, { id: [1n, 2n], name: ["Ada", null] });
+```
+
+Decoded values are plain JavaScript: `bigint` for 64-bit integers, strings,
+`Uint8Array`, objects for structs and arrays for lists. Decimals arrive
+unscaled (`4.5` as `45n` at scale 1).
 
 ### Results: iterators and producers
 
@@ -172,7 +191,11 @@ The supported adapters reuse the published VGI framing and connection reuse:
 | `serveIroh` | Raw Iroh QUIC through an explicitly installed `vgi-iroh-bridge` 0.27.3; authorization uses the verified EndpointId. |
 
 `httpHandler` can also be mounted in another Node HTTP/HTTPS host, which must
-enforce socket/admission limits itself. Only `serveMutualTls` permits routable
+enforce socket/admission limits itself. Its options pass CORS (`corsOrigins`)
+and OAuth discovery (`oauthResourceMetadata`) through to VGI-RPC: a request
+without an accepted identity gets VGI-RPC's standard 401, with the OAuth
+`WWW-Authenticate` challenge when configured, while CORS preflights, `/health`
+and the OAuth metadata need no credentials. Only `serveMutualTls` permits routable
 bind addresses. Clients must verify the server certificate and hostname; no
 adapter disables certificate verification.
 
@@ -228,6 +251,20 @@ handle cleanup, stream cancellation, idle expiry and shutdown reclaim state.
 There is no hard per-operation execution deadline for backend callbacks.
 No SQL, values, tokens or raw backend exceptions
 are logged by this toolkit.
+
+## Cloudflare Workers
+
+Under the `workerd`/`worker` export conditions the package resolves to a
+runtime-agnostic entry: `GrainliftService`, `httpHandler`, authentication and
+the Arrow helpers, with flechette as the Arrow backend. The Node.js host and
+the TCP, mTLS and Iroh transports are not part of it. It needs the
+`nodejs_compat` compatibility flag (AsyncLocalStorage, `node:crypto`, `Buffer`).
+
+Sessions, statements and result iterators live in memory between requests, so
+host the service in one Durable Object and forward every request to it; when
+the object is evicted, sessions end and the driver opens new ones (autocommit
+work only). The [Cloudflare example](https://github.com/Query-farm/grainlift-typescript-cloudflare-example)
+serves a D1 database this way, with Google sign-in.
 
 ## Testing
 

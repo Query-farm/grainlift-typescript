@@ -3,9 +3,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { Socket } from "node:net";
-import { Transform } from "node:stream";
 import {
+  AuthFailure,
+  AuthReason,
   createHttpHandler,
+  type HttpHandlerOptions,
   jsonStateSerializer,
   Protocol,
   serveStream,
@@ -28,17 +30,17 @@ import {
   type Worker,
 } from "./api.js";
 import {
+  schema as arrowSchema,
   batch,
   decodeBatch,
   decodeSchema,
   encodeBatch,
   encodeSchema,
   type RecordBatch,
-  retainedBytes,
-  Schema,
+  type Schema,
   sameSchema,
 } from "./arrow.js";
-import { AuthContext, type AuthenticateFn } from "./auth.js";
+import type { AuthContext, AuthenticateFn } from "./auth.js";
 import {
   CONTRACT,
   decodeRecord,
@@ -105,6 +107,18 @@ interface BindCursor {
   upload_id: string;
   sequence: bigint;
 }
+/** VGI-RPC HTTP options a deployment may set; the service owns the rest. */
+export type HttpOptions = Pick<
+  HttpHandlerOptions,
+  | "prefix"
+  | "compressionLevel"
+  | "corsOrigins"
+  | "corsMaxAge"
+  | "oauthResourceMetadata"
+  | "oauthPkceScope"
+  | "allowedReturnOrigins"
+  | "tokenKey"
+>;
 export interface ServiceOptions {
   limits?: Partial<Limits>;
   /** Called before connection allocation. Unlisted targets/principals must be rejected. */
@@ -128,9 +142,11 @@ export class GrainliftService {
   private readonly sessions = new Map<string, Session>();
   private readonly pending = new Map<string, number>();
   private readonly auth = new AsyncLocalStorage<AuthContext>();
+  /** The HTTP authentication outcome, read back by VGI-RPC's authenticate hook. */
+  private readonly httpAuth = new AsyncLocalStorage<{ identity?: AuthContext; error?: unknown }>();
   private readonly socketScope = new AsyncLocalStorage<SocketScope>();
   private readonly partitionKey = randomBytes(32);
-  private readonly timer: NodeJS.Timeout;
+  private readonly timer: ReturnType<typeof setInterval>;
   private closed = false;
   private opening = 0;
   private readonly config: ServiceOptions;
@@ -158,18 +174,28 @@ export class GrainliftService {
       },
       Math.min(this.limits.idleMs, 1000),
     );
-    this.timer.unref();
+    // Node.js: never keep the process alive for the reaper. (Workers have no unref.)
+    (this.timer as { unref?: () => void }).unref?.();
   }
 
-  /** Build a Fetch handler. Authentication is mandatory on every request and continuation. */
+  /**
+   * Build a Fetch handler. Authentication is mandatory on every RPC request
+   * and continuation. A request without an accepted identity gets VGI-RPC's
+   * standard 401 (with CORS headers and, when `oauthResourceMetadata` is set,
+   * the OAuth `WWW-Authenticate` challenge); CORS preflights, health checks
+   * and OAuth metadata need no credentials.
+   */
   httpHandler(
     authenticate: AuthenticateFn,
-    extra: { prefix?: string; compressionLevel?: number | null } = {},
+    extra: HttpOptions = {},
   ): (request: Request) => Promise<Response> {
     const handler = createHttpHandler(this.protocol, {
       ...extra,
       authenticate: () => {
-        const auth = this.auth.getStore() ?? AuthContext.anonymous();
+        const outcome = this.httpAuth.getStore();
+        if (outcome?.error !== undefined) throw outcome.error;
+        const auth = outcome?.identity;
+        if (!auth) throw new AuthFailure(AuthReason.MissingCredential, "authentication required");
         return new VgiAuthContext(auth.domain, auth.authenticated, auth.principal, auth.claims);
       },
       maxRequestBytes: this.limits.requestBytes,
@@ -188,14 +214,31 @@ export class GrainliftService {
       enableNotFoundPage: false,
     });
     return async (request) => {
-      let identity: AuthContext;
+      let outcome: { identity?: AuthContext; error?: unknown };
       try {
-        identity = await authenticate(request);
-      } catch {
-        return new Response(null, { status: 401 });
+        const identity = await authenticate(request);
+        outcome =
+          identity.authenticated && identity.principal !== null
+            ? { identity }
+            : {
+                error: new AuthFailure(
+                  request.headers.has("authorization")
+                    ? AuthReason.InvalidCredential
+                    : AuthReason.MissingCredential,
+                  "authentication required",
+                ),
+              };
+      } catch (error) {
+        outcome = {
+          error:
+            error instanceof AuthFailure
+              ? error
+              : new AuthFailure(AuthReason.InvalidCredential, "authentication rejected"),
+        };
       }
-      if (!identity.authenticated || identity.principal === null) return new Response(null, { status: 401 });
-      return this.auth.run(identity, () => handler(request));
+      return this.httpAuth.run(outcome, () =>
+        outcome.identity ? this.auth.run(outcome.identity, () => handler(request)) : handler(request),
+      );
     };
   }
 
@@ -207,6 +250,8 @@ export class GrainliftService {
   async serveSocket(socket: Socket, identity: AuthContext, inputBudget: number): Promise<void> {
     if (!Number.isSafeInteger(inputBudget) || inputBudget < 1)
       throw new TypeError("Invalid connection budget");
+    // Loaded here so the service itself also runs where only HTTP is served.
+    const { Transform } = await import("node:stream");
     let consumed = 0;
     const input = new Transform({
       highWaterMark: 65536,
@@ -783,7 +828,7 @@ export class GrainliftService {
   private checkBatch(result: ResultState, value: RecordBatch): void {
     if (!sameSchema(value.schema, result.query.schema))
       throw new AdbcError("Result schema changed", "invalid_data");
-    if (retainedBytes(value) > this.limits.batchBytes || encodeBatch(value).length > this.limits.batchBytes)
+    if (encodeBatch(value).length > this.limits.batchBytes)
       throw new AdbcError("Batch exceeds configured limit", "invalid_data");
   }
   /** Resume a producer from cursor state; replaying the previous sequence re-produces its batch. */
@@ -883,7 +928,8 @@ export class GrainliftService {
               invalid("Binding exceeds configured limit");
             const value = decodeBatch(payload, this.limits.batchBytes);
             if (!sameSchema(value.schema, upload.schema)) invalid("Binding schema changed");
-            const retained = Math.max(payload.length, retainedBytes(value));
+            // decodeBatch copies the payload, so it bounds what the batch retains.
+            const retained = payload.length;
             if (upload.bytes + retained > this.limits.bindBytes) invalid("Binding exceeds configured limit");
             upload.batches.push(value);
             upload.bytes += retained;
@@ -915,7 +961,7 @@ export class GrainliftService {
       } else if (method.kind === "producer") {
         protocol.producer<Cursor>(method.name, {
           params: schema(method.request),
-          outputSchema: new Schema([]),
+          outputSchema: arrowSchema([]),
           init: (params) => this.initResult(params),
           produce: async (cursor, out) => {
             const value = await this.next(cursor);

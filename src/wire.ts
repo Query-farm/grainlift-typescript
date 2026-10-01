@@ -1,22 +1,24 @@
 // Copyright (c) 2026 Query Farm LLC
 // SPDX-License-Identifier: Apache-2.0
 
-import type { DataType } from "@query-farm/apache-arrow";
 import { AdbcError, invalid, type OptionKind, type OptionValue } from "./api.js";
 import {
-  Binary,
-  Bool,
+  field as arrowField,
+  schema as arrowSchema,
   batch,
+  binary,
+  bool,
+  type DataType,
   decodeBatch,
   encodeBatch,
-  Field,
-  Float64,
-  Int64,
-  List,
-  Schema,
-  Struct,
+  type Field,
+  float64,
+  int64,
+  list,
+  type Schema,
   sameSchema,
-  Utf8,
+  struct,
+  utf8,
 } from "./arrow.js";
 import contract from "./contract.json" with { type: "json" };
 
@@ -50,21 +52,21 @@ function field(spec: FieldSpec): Field {
   let type: DataType;
   if (typeof spec.type === "string") {
     const primitive: Record<string, () => DataType> = {
-      string: () => new Utf8(),
-      binary: () => new Binary(),
-      int64: () => new Int64(),
-      bool: () => new Bool(),
-      float64: () => new Float64(),
+      string: utf8,
+      binary,
+      int64,
+      bool,
+      float64,
     };
     const make = primitive[spec.type];
     if (!make) throw new Error("Unknown protocol physical type");
     type = make();
-  } else if ("list" in spec.type) type = new List(field(spec.type.list));
-  else type = new Struct(spec.type.struct.map(field));
-  return new Field(spec.name, type, spec.nullable, new Map(Object.entries(spec.metadata)));
+  } else if ("list" in spec.type) type = list(field(spec.type.list));
+  else type = struct(spec.type.struct.map(field));
+  return arrowField(spec.name, type, spec.nullable, new Map(Object.entries(spec.metadata)));
 }
 export function schema(spec: SchemaSpec): Schema {
-  return new Schema(spec.fields.map(field), new Map(Object.entries(spec.metadata)));
+  return arrowSchema(spec.fields.map(field), new Map(Object.entries(spec.metadata)));
 }
 export function recordSchema(name: string): Schema {
   const spec = CONTRACT.records[name];

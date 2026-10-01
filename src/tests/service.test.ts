@@ -17,27 +17,25 @@ import {
   type Worker,
 } from "../api.js";
 import {
-  Binary,
-  Bool,
   batch,
+  binary,
+  bool,
   encodeBatch,
   encodeSchema,
-  Field,
-  Int64,
+  field,
+  int64,
+  schema as makeSchema,
   type RecordBatch,
-  Schema,
+  type Schema,
 } from "../arrow.js";
 import { AuthContext } from "../auth.js";
 import { GrainliftService } from "../service.js";
 import { CONTRACT, decodeRecord, encodeRecord, optionToWire } from "../wire.js";
 
 const identity = new AuthContext("test", true, "alice");
-const resultSchema = new Schema([new Field("value", new Int64(), false)]);
+const resultSchema = makeSchema([field("value", int64(), false)]);
 const one = () => batch(resultSchema, { value: [9007199254740993n] });
-const bindingSchema = new Schema([
-  new Field("batch_ipc", new Binary(), false),
-  new Field("finish", new Bool(), false),
-]);
+const bindingSchema = makeSchema([field("batch_ipc", binary(), false), field("finish", bool(), false)]);
 const frame = (payload: Uint8Array, finish: boolean) =>
   batch(bindingSchema, { batch_ipc: [payload], finish: [finish] });
 const isStatus =

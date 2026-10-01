@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { tcpConnect } from "@query-farm/vgi-rpc";
 import { AdbcError, Connection, Statement } from "../api.js";
-import { batch, Field, Int64, Schema } from "../arrow.js";
+import { batch, field, int64, schema as makeSchema } from "../arrow.js";
 import { AuthContext } from "../auth.js";
 import { GrainliftService } from "../service.js";
 import { serveIroh, serveMutualTls, serveTcp } from "../transports.js";
@@ -19,7 +19,7 @@ import { decodeRecord, encodeRecord } from "../wire.js";
 const identity = new AuthContext("local", true, "alice");
 function fixture(pause: Promise<void> = Promise.resolve(), releaseError?: Error) {
   let releases = 0;
-  const schema = new Schema([new Field("value", new Int64(), false)]);
+  const schema = makeSchema([field("value", int64(), false)]);
   class TestStatement extends Statement {
     override async executeUpdate(): Promise<bigint> {
       await pause;

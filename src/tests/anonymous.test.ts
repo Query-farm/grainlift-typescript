@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Connection, type OpenOptions, type QueryResult, Statement } from "../api.js";
-import { batch, Field, Int64, Schema } from "../arrow.js";
+import { batch, field, int64, schema as makeSchema } from "../arrow.js";
 import {
   ANONYMOUS_DOMAIN,
   AuthContext,
@@ -17,7 +17,7 @@ import { connect, query } from "./http-client.js";
 
 const TOKEN = "anonymous-test-token-123456";
 const alice = new AuthContext("bearer", true, "alice");
-const schema = new Schema([new Field("value", new Int64(), false)]);
+const schema = makeSchema([field("value", int64(), false)]);
 
 class TestStatement extends Statement {
   override async setSqlQuery(): Promise<void> {}
@@ -166,5 +166,52 @@ test("serveHttp serves anonymous clients over a real socket", async () => {
   } finally {
     client.close();
     await host.close();
+  }
+});
+
+test("rejections are standard 401s and browsers can preflight without credentials", async () => {
+  const service = new GrainliftService({ open: async () => new TestConnection() }, { authorize: () => true });
+  const handler = service.httpHandler(bearerAuthenticateStatic(new Map([[TOKEN, alice]])), {
+    corsOrigins: "https://app.example",
+    oauthResourceMetadata: {
+      resource: "https://gw.example",
+      authorizationServers: ["https://issuer.example"],
+      clientId: "browser-client",
+    },
+  });
+  try {
+    const preflight = await handler(
+      new Request("https://gw.example/vgi/open_connection", {
+        method: "OPTIONS",
+        headers: { origin: "https://app.example", "access-control-request-method": "POST" },
+      }),
+    );
+    assert.ok(preflight.status < 300, `preflight status ${preflight.status}`);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "https://app.example");
+
+    const metadata = await handler(new Request("https://gw.example/.well-known/oauth-protected-resource"));
+    assert.equal(metadata.status, 200);
+    assert.equal(((await metadata.json()) as { client_id?: string }).client_id, "browser-client");
+
+    for (const headers of [{}, { authorization: "Bearer wrong-token-0000000000" }] as Record<
+      string,
+      string
+    >[]) {
+      const rejected = await handler(
+        new Request("https://gw.example/vgi/open_connection", {
+          method: "POST",
+          headers: { origin: "https://app.example", ...headers },
+          body: new Uint8Array(0),
+        }),
+      );
+      assert.equal(rejected.status, 401);
+      assert.equal(rejected.headers.get("access-control-allow-origin"), "https://app.example");
+      assert.match(
+        rejected.headers.get("www-authenticate") ?? "",
+        /resource_metadata=.*client_id="browser-client"/,
+      );
+    }
+  } finally {
+    await service.close();
   }
 });
