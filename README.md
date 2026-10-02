@@ -252,6 +252,47 @@ There is no hard per-operation execution deadline for backend callbacks.
 No SQL, values, tokens or raw backend exceptions
 are logged by this toolkit.
 
+### Large requests and results: object storage
+
+Over HTTP a request is limited to `limits.requestBytes`, and the native driver
+splits parameter uploads to fit, so one row larger than a request cannot be
+sent. Give the HTTP host an S3-compatible bucket (AWS S3, Cloudflare R2, MinIO)
+and large requests and results go through it instead
+([VGI-RPC external locations](https://vgi-rpc.query.farm/)), as with
+grainlift-server's `[external_storage]`:
+
+```ts
+import { ExternalStorageConfig, serveHttp } from "@query-farm/grainlift";
+
+const externalStorage = new ExternalStorageConfig({
+  endpoint: "https://<account-id>.r2.cloudflarestorage.com", // or https://s3.<region>.amazonaws.com
+  bucket: "grainlift-exchange",
+  region: "auto", // the signing region; "auto" for R2
+  prefix: "grainlift/",
+  // accessKeyId / secretAccessKey, or AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+});
+await serveHttp(service, authenticate, { http: { externalStorage } });
+// or: service.httpHandler(authenticate, { externalStorage })
+```
+
+- A client whose request is over the limit asks for an upload URL
+  (`POST /__upload_url__/init`), PUTs the request to the bucket, and sends
+  only a pointer, up to `maxUploadBytes` (256 MiB).
+- A result batch of at least `thresholdBytes` (1 MiB) is stored in the bucket
+  and the client is sent a URL to fetch it.
+
+URLs are presigned in process (AWS Signature Version 4 with WebCrypto, so it
+also runs on Cloudflare Workers) and valid for `urlTtlSeconds` (900); clients
+need no storage credentials. The service fetches only objects in its own
+bucket. The secret key is never serialized or printed. TCP, mTLS and Iroh are
+unaffected. The service never deletes objects: give the bucket a lifecycle rule
+that expires them, and for browser clients a CORS rule allowing `PUT` and `GET`
+(with `Content-Type` and `Content-Encoding`) from their origin.
+
+A bound batch is accepted whenever its bind turn fits the request limit (or,
+with storage, the upload limit), even when that is larger than
+`limits.batchBytes`; `limits.bindBytes` still bounds the whole upload.
+
 ## Cloudflare Workers
 
 Under the `workerd`/`worker` export conditions the package resolves to a

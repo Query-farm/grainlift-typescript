@@ -41,6 +41,7 @@ import {
   sameSchema,
 } from "./arrow.js";
 import type { AuthContext, AuthenticateFn } from "./auth.js";
+import type { ExternalStorageConfig } from "./storage.js";
 import {
   CONTRACT,
   decodeRecord,
@@ -108,7 +109,14 @@ interface BindCursor {
   sequence: bigint;
 }
 /** VGI-RPC HTTP options a deployment may set; the service owns the rest. */
-export type HttpOptions = Pick<
+export type HttpOptions = HttpHandlerPassthrough & {
+  /**
+   * Send large requests and results through an S3-compatible bucket (sets
+   * `uploadUrlProvider`, `maxUploadBytes` and `externalLocation`).
+   */
+  externalStorage?: ExternalStorageConfig;
+};
+type HttpHandlerPassthrough = Pick<
   HttpHandlerOptions,
   | "prefix"
   | "compressionLevel"
@@ -154,6 +162,14 @@ export class GrainliftService {
   private readonly timer: ReturnType<typeof setInterval>;
   private closed = false;
   private opening = 0;
+  /**
+   * The largest bound batch payload one bind turn may carry. The driver sends
+   * turns up to the HTTP request limit (or, with object storage, up to the
+   * upload limit), so a smaller `batchBytes` must not reject them.
+   */
+  private bindTurnBytes: number;
+  /** The largest request record accepted: the request limit, or the upload limit with storage. */
+  private requestRecordBytes: number;
   private readonly config: ServiceOptions;
 
   constructor(
@@ -172,6 +188,8 @@ export class GrainliftService {
       allowedDatabaseOptions: new Set(config.allowedDatabaseOptions),
       allowedConnectionOptions: new Set(config.allowedConnectionOptions),
     };
+    this.bindTurnBytes = Math.max(this.limits.batchBytes, this.limits.requestBytes);
+    this.requestRecordBytes = this.limits.requestBytes;
     this.protocol = this.buildProtocol();
     this.timer = setInterval(
       () => {
@@ -194,8 +212,15 @@ export class GrainliftService {
     authenticate: AuthenticateFn,
     extra: HttpOptions = {},
   ): (request: Request) => Promise<Response> {
+    const { externalStorage, ...passthrough } = extra;
+    const storage = externalStorage?.httpOptions();
+    if (storage) {
+      this.bindTurnBytes = Math.max(this.bindTurnBytes, storage.maxUploadBytes);
+      this.requestRecordBytes = Math.max(this.requestRecordBytes, storage.maxUploadBytes);
+    }
     const handler = createHttpHandler(this.protocol, {
-      ...extra,
+      ...passthrough,
+      ...storage,
       authenticate: () => {
         const outcome = this.httpAuth.getStore();
         if (outcome?.error !== undefined) throw outcome.error;
@@ -933,13 +958,11 @@ export class GrainliftService {
                 `Binding exceeds the limit of ${this.limits.bindBytes} bytes ` +
                   `(at least ${upload.bytes + payload.length} bytes)`,
               );
-            if (payload.length > this.limits.batchBytes)
-              invalid(
-                `A bound batch is ${payload.length} bytes; the limit is ${this.limits.batchBytes} bytes`,
-              );
+            if (payload.length > this.bindTurnBytes)
+              invalid(`A bound batch is ${payload.length} bytes; the limit is ${this.bindTurnBytes} bytes`);
             let value: RecordBatch;
             try {
-              value = decodeBatch(payload, this.limits.batchBytes);
+              value = decodeBatch(payload, this.bindTurnBytes);
             } catch {
               // Arrow decoding errors are not client-visible AdbcErrors.
               invalid("A bound batch is not a valid Arrow IPC stream");
@@ -967,7 +990,7 @@ export class GrainliftService {
           result: schema(method.response!),
           handler: async (params) => {
             const request = method.request_record
-              ? decodeRecord(method.request_record, params.request as Uint8Array, this.limits.requestBytes)
+              ? decodeRecord(method.request_record, params.request as Uint8Array, this.requestRecordBytes)
               : params;
             const value = await this.invoke(method.name, request);
             return { result: encodeRecord(method.response_record!, value, this.limits.batchBytes) };

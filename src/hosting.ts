@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer, type RequestListener, type Server } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import type { AuthenticateFn } from "./auth.js";
-import type { GrainliftService } from "./service.js";
+import type { GrainliftService, HttpOptions } from "./service.js";
 
 export interface HttpServerOptions {
   port?: number;
@@ -14,6 +14,8 @@ export interface HttpServerOptions {
   requestTimeoutMs?: number;
   shutdownTimeoutMs?: number;
   tls?: { cert: string | Buffer; key: string | Buffer };
+  /** VGI-RPC HTTP options, such as `externalStorage` for large requests and results. */
+  http?: HttpOptions;
 }
 export interface RunningServer {
   endpoint: string;
@@ -42,7 +44,7 @@ export async function serveHttp(
   ) {
     throw new TypeError("Hosting limits must be positive integers");
   }
-  const handler = service.httpHandler(authenticate);
+  const handler = service.httpHandler(authenticate, options.http);
   let active = 0;
   let stopping = false;
   const listener: RequestListener = async (incoming, outgoing) => {

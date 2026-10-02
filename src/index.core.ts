@@ -16,4 +16,9 @@ export {
   bearerAuthenticateStatic,
 } from "./auth.js";
 export { GrainliftService, type HttpOptions, type ServiceOptions } from "./service.js";
+export {
+  ExternalStorageConfig,
+  type ExternalStorageHttpOptions,
+  type ExternalStorageOptions,
+} from "./storage.js";
 export { CONTRACT, decodeRecord, encodeRecord, recordSchema } from "./wire.js";

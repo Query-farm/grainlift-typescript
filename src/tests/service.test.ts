@@ -456,7 +456,8 @@ test("bound batches over the batch limit or not Arrow are client-visible errors"
     batch(resultSchema, { value: Array.from({ length: 2000 }, (_, i) => BigInt(i)) }),
   );
   assert.ok(encoded.length > limit);
-  const f = await fixture({ batchBytes: limit });
+  // A bind turn may be as large as the request limit, so both are below it.
+  const f = await fixture({ batchBytes: limit, requestBytes: limit });
   try {
     await f.service.withIdentity(identity, async () => {
       for (const [payload, message] of [
@@ -473,6 +474,25 @@ test("bound batches over the batch limit or not Arrow are client-visible errors"
           return true;
         });
       }
+    });
+  } finally {
+    await f.service.close();
+  }
+});
+
+test("a bound batch that fits the request limit is accepted above batchBytes", async () => {
+  // The driver sizes bind turns by the HTTP request limit alone.
+  const encoded = encodeBatch(
+    batch(resultSchema, { value: Array.from({ length: 2000 }, (_, i) => BigInt(i)) }),
+  );
+  const f = await fixture({ batchBytes: 8192, requestBytes: encoded.length * 2 });
+  try {
+    await f.service.withIdentity(identity, async () => {
+      const cursor = await f.service.initBind({ ...f.handles, schema_ipc: encodeSchema(resultSchema) }, true);
+      await f.service.pushBind(cursor, frame(encoded, false));
+      cursor.sequence++;
+      await f.service.pushBind(cursor, frame(new Uint8Array(), true));
+      assert.equal(f.statement.bound[0]!.numRows, 2000);
     });
   } finally {
     await f.service.close();
