@@ -118,6 +118,11 @@ export type HttpOptions = Pick<
   | "oauthPkceScope"
   | "allowedReturnOrigins"
   | "tokenKey"
+  // Externalization: clients upload oversized requests to vended URLs, and
+  // large responses are stored and fetched by URL.
+  | "uploadUrlProvider"
+  | "maxUploadBytes"
+  | "externalLocation"
 >;
 export interface ServiceOptions {
   limits?: Partial<Limits>;
