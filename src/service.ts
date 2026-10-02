@@ -920,19 +920,29 @@ export class GrainliftService {
             upload.batches = [];
             upload.finished = true;
           } else {
-            if (
-              upload.bytes + payload.length > this.limits.bindBytes ||
-              upload.batches.length >= this.limits.bindBatches ||
-              (!upload.stream && upload.batches.length !== 0)
-            )
-              invalid("Binding exceeds configured limit");
-            const value = decodeBatch(payload, this.limits.batchBytes);
+            if (!upload.stream && upload.batches.length !== 0) invalid("Bind requires exactly one batch");
+            if (upload.batches.length >= this.limits.bindBatches)
+              invalid(`Binding exceeds the limit of ${this.limits.bindBatches} batches`);
+            if (upload.bytes + payload.length > this.limits.bindBytes)
+              invalid(
+                `Binding exceeds the limit of ${this.limits.bindBytes} bytes ` +
+                  `(at least ${upload.bytes + payload.length} bytes)`,
+              );
+            if (payload.length > this.limits.batchBytes)
+              invalid(
+                `A bound batch is ${payload.length} bytes; the limit is ${this.limits.batchBytes} bytes`,
+              );
+            let value: RecordBatch;
+            try {
+              value = decodeBatch(payload, this.limits.batchBytes);
+            } catch {
+              // Arrow decoding errors are not client-visible AdbcErrors.
+              invalid("A bound batch is not a valid Arrow IPC stream");
+            }
             if (!sameSchema(value.schema, upload.schema)) invalid("Binding schema changed");
             // decodeBatch copies the payload, so it bounds what the batch retains.
-            const retained = payload.length;
-            if (upload.bytes + retained > this.limits.bindBytes) invalid("Binding exceeds configured limit");
             upload.batches.push(value);
-            upload.bytes += retained;
+            upload.bytes += payload.length;
           }
           upload.previousDigest = digest;
           upload.sequence++;

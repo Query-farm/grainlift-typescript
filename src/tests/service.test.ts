@@ -450,6 +450,35 @@ test("binding rejects immediately above byte and batch boundaries and cleans upl
   }
 });
 
+test("bound batches over the batch limit or not Arrow are client-visible errors", async () => {
+  const limit = 8192;
+  const encoded = encodeBatch(
+    batch(resultSchema, { value: Array.from({ length: 2000 }, (_, i) => BigInt(i)) }),
+  );
+  assert.ok(encoded.length > limit);
+  const f = await fixture({ batchBytes: limit });
+  try {
+    await f.service.withIdentity(identity, async () => {
+      for (const [payload, message] of [
+        [encoded, new RegExp(`bound batch is ${encoded.length} bytes; the limit is ${limit}`)],
+        [new Uint8Array(32), /not a valid Arrow IPC stream/],
+      ] as const) {
+        const cursor = await f.service.initBind(
+          { ...f.handles, schema_ipc: encodeSchema(resultSchema) },
+          true,
+        );
+        await assert.rejects(f.service.pushBind(cursor, frame(payload, false)), (error: unknown) => {
+          assert.ok(error instanceof AdbcError && error.status === "invalid_arguments", String(error));
+          assert.match(error.message, message);
+          return true;
+        });
+      }
+    });
+  } finally {
+    await f.service.close();
+  }
+});
+
 test("authoritative options reject collisions and copy mutable configured bytes", async () => {
   const worker = new CompleteWorker();
   const secret = new Uint8Array([1, 2, 3]);

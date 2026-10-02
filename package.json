@@ -35,7 +35,7 @@
     "check:package": "npm run build && node scripts/check-package.mjs"
   },
   "dependencies": {
-    "@query-farm/vgi-rpc": "0.25.5"
+    "@query-farm/vgi-rpc": "0.25.6"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.16",
