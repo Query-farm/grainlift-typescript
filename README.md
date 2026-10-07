@@ -14,7 +14,7 @@ This is a prerelease SDK. The package name is `@query-farm/grainlift`, but it is
 support (`"@query-farm/grainlift": "github:Query-farm/grainlift-typescript#<commit>"`);
 the `prepare` script builds `dist/` during installation.
 
-The toolkit implements all 31 methods in Grainlift 0.4.0, including
+The toolkit implements all 31 methods in Grainlift 0.5.0, including
 connections, statements, transactions, preparation, single-batch and stream
 binding, ingestion through standard statement options plus execute-update,
 metadata/statistics, partition descriptors, Substrait, typed options, and
@@ -71,6 +71,14 @@ const authenticate = bearerAuthenticateStatic(new Map([
 const server = await serveHttp(service, authenticate);
 // server.endpoint is a loopback URL; await server.close() during shutdown.
 ```
+
+`Connection.statisticsSupported()` and `statisticNamesSupported()` declare
+support for each opened connection. Both default to `null` (unknown).
+Override them to return `false` when unsupported: Grainlift 0.5 clients then
+answer ADBC `NOT_IMPLEMENTED` without an HTTP request. `true` and `null` keep
+remote dispatch. The flags travel in `open_connection` and refresh when a
+session is reopened; they do not cache table schemas. This SDK uses protocol
+0.5.0 and must be upgraded together with its clients.
 
 ### Arrow types and batches
 

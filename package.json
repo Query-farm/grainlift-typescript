@@ -1,6 +1,6 @@
 {
   "name": "@query-farm/grainlift",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Typed Grainlift ADBC worker toolkit for Node.js and Cloudflare Workers",
   "type": "module",
   "license": "Apache-2.0",

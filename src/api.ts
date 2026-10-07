@@ -272,6 +272,13 @@ export class Statement {
 
 /** One backend connection, serialized by the service except cancellation. */
 export class Connection {
+  /** Explicit support for this session; null leaves dispatch to the backend. */
+  statisticsSupported(): boolean | null {
+    return null;
+  }
+  statisticNamesSupported(): boolean | null {
+    return null;
+  }
   async newStatement(): Promise<Statement> {
     unsupported();
   }

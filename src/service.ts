@@ -582,8 +582,14 @@ export class GrainliftService {
         throw new AdbcError("Service is closed", "invalid_state");
       }
       const session_id = randomUUID();
+      let response: Record<string, unknown>;
       try {
-        encodeRecord("SessionResponse", { session_id }, this.limits.batchBytes);
+        response = {
+          session_id,
+          statistics_supported: connection.statisticsSupported(),
+          statistic_names_supported: connection.statisticNamesSupported(),
+        };
+        encodeRecord("SessionResponse", response, this.limits.batchBytes);
       } catch (error) {
         await connection.close();
         throw error;
@@ -598,7 +604,7 @@ export class GrainliftService {
         touched: Date.now(),
         busy: false,
       });
-      return { session_id };
+      return response;
     } finally {
       this.opening--;
       const count = this.pending.get(owner)! - 1;

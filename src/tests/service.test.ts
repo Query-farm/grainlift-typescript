@@ -202,6 +202,39 @@ test("registers every authoritative method and preserves exact typed records", a
   }
 });
 
+test("open_connection advertises each backend's explicit or unknown statistics support", async () => {
+  for (const supported of [false, true, null]) {
+    class DeclaredConnection extends CompleteConnection {
+      override statisticsSupported(): boolean | null {
+        return supported;
+      }
+      override statisticNamesSupported(): boolean | null {
+        return supported;
+      }
+    }
+    const service = new GrainliftService(
+      { open: async () => new DeclaredConnection() },
+      {
+        authorize: () => true,
+      },
+    );
+    try {
+      const response = await service.withIdentity(identity, () =>
+        service.invoke("open_connection", {
+          target: "default",
+          database_options: [],
+          connection_options: [],
+        }),
+      );
+      const decoded = decodeRecord("SessionResponse", encodeRecord("SessionResponse", response, 4096), 4096);
+      assert.equal(decoded.statistics_supported, supported);
+      assert.equal(decoded.statistic_names_supported, supported);
+    } finally {
+      await service.close();
+    }
+  }
+});
+
 test("dispatches preparation, schema, update, Substrait, transactions and cancellation", async () => {
   const f = await fixture();
   try {
